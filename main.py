@@ -1,47 +1,91 @@
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 import uvicorn
 
-# ----------------------------------------------------
+# ---------------------------------------
 # 1. Create FastAPI App
-# ----------------------------------------------------
+# ---------------------------------------
 app = FastAPI()
 
 
-# ----------------------------------------------------
-# 2. Simple GET API to check the server
-# ----------------------------------------------------
+# ---------------------------------------
+# 2. Store Active Connections
+# ---------------------------------------
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[WebSocket, str] = {}
+
+    async def connect(self, websocket: WebSocket, username: str):
+        await websocket.accept()
+        self.active_connections[websocket] = username
+
+    def disconnect(self, websocket: WebSocket):
+        if websocket in self.active_connections:
+            del self.active_connections[websocket]
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections:
+            await connection.send_text(message)
+
+    def get_usernames(self):
+        return list(self.active_connections.values())
+
+
+manager = ConnectionManager()
+
+
+# ---------------------------------------
+# 3. Root API
+# ---------------------------------------
 @app.get("/")
-async def read_root():
-    return {"message": "Chatterbox Milestone 1 - WebSocket Server Running"}
+async def root():
+    return {"message": "Chatterbox Milestone 2 - Group Chat Server Running"}
 
 
-# ----------------------------------------------------
-# 3. WebSocket Endpoint
-# ----------------------------------------------------
+# ---------------------------------------
+# 4. WebSocket Endpoint
+# ---------------------------------------
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
 
-    # Step 1: Accept the WebSocket connection
+    # Ask for username
     await websocket.accept()
-    print("Client connected!")
+    await websocket.send_text("Enter your username:")
 
-    # Step 2: Listen for messages continuously
-    while True:
-        try:
-            # Receive message from client
+    username = await websocket.receive_text()
+
+    # Add user
+    await manager.connect(websocket, username)
+
+    # Notify all
+    await manager.broadcast(f" {username} joined the chat")
+
+    print(f"{username} connected")
+
+    try:
+        while True:
+
             message = await websocket.receive_text()
-            print(f"Received: {message}")
 
-            # Step 3: Send reply back (echo)
-            await websocket.send_text(f"Server: You said -> {message}")
+            # Special command: show users
+            if message.lower() == "/users":
+                users = ", ".join(manager.get_usernames())
+                await websocket.send_text(f"Online users: {users}")
+            else:
+                # Broadcast normal message
+                await manager.broadcast(f"{username}: {message}")
 
-        except Exception as e:
-            print("Client disconnected!", e)
-            break
+    except WebSocketDisconnect:
+
+        manager.disconnect(websocket)
+
+        # Notify all
+        await manager.broadcast(f" {username} left the chat")
+
+        print(f"{username} disconnected")
 
 
-# ----------------------------------------------------
-# 4. Start the WebSocket Server
-# ----------------------------------------------------
+# ---------------------------------------
+# 5. Run Server
+# ---------------------------------------
 if __name__ == "__main__":
     uvicorn.run("main:app", host="localhost", port=8000, reload=True)
